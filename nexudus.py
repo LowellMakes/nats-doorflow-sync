@@ -19,6 +19,7 @@ from typing import Any
 
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, before_log, retry_if_exception_type
+from datetime import datetime, timezone, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -31,22 +32,14 @@ NEXUDUS_PASS = os.environ["NEXUDUS_PASS"]
 class NexudusMember:
     email: str
     full_name: str
-    groups: list[str]           # group names this member belongs to
-    has_unpaid_invoice: bool    # True if any invoice is currently unpaid
-    last_updated: datetime      # when this member's profile was last changed in Nexudus
-
+    team_ids: list[int]
+    contract_ids: list[int]
+    last_updated: datetime
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-@retry(
-    retry=retry_if_exception_type(requests.RequestException),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    stop=stop_after_attempt(5),
-    before=before_log(log, logging.WARNING),
-    reraise=True,
-)
 def _get(endpoint: str, params: dict) -> dict:
     """
     Make a single authenticated GET request to the Nexudus API.
@@ -84,6 +77,38 @@ def _parse_member(record: dict[str, Any]) -> NexudusMember:
     return NexudusMember(
         email=record["Email"],
         full_name=record["FullName"],
-        groups=[g["Name"] for g in record.get("Groups", [])], has_unpaid_invoice=record["HasUnpaidInvoice"],   # TODO: confirm exact field name
-        last_updated=datetime.fromisoformat(record["UpdatedAt"]),  # TODO: confirm exact field name
+        team_ids=[int(x) for x in record['TeamIds'].split(",")] if record['TeamIds'] else [], 
+        contract_ids=[int(x) for x in record['CoworkerContractIds'].split(",")] if record['CoworkerContractIds'] else [],   # TODO: confirm exact field name
+        last_updated=datetime.fromisoformat(record["UpdatedOn"]),  # TODO: confirm exact field name
     )
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def fetch_all() -> list[NexudusMember]:
+    """Fetch every member from Nexudus. Used by the full sync."""
+    log.info("Nexudus | fetching all members")
+    records = _fetch_pages("/spaces/coworkers", {})
+    members = [_parse_member(r) for r in records]
+    log.info(f"Nexudus | fetched {len(members)} member(s)")
+    return members
+
+
+def fetch_updated_since(since: datetime) -> list[NexudusMember]:
+    """
+    Fetch only members whose profiles changed after `since`.
+    Used by the fast sync.
+    """
+    log.info(f"Nexudus | fetching members updated since {since.strftime('%Y-%m-%dT%H:%M:%S')}")
+    records = _fetch_pages(
+        "/spaces/coworkers",
+        {"from_Coworker_UpdatedOn": since.strftime('%Y-%m-%dT%H:%M')},   # TODO: confirm exact param name
+    )
+    members = [_parse_member(r) for r in records]
+    log.info(f"Nexudus | fetched {len(members)} updated member(s)")
+    return members
+
+if __name__ == '__main__':
+
+    members = fetch_updated_since(datetime.now(timezone.utc) - timedelta(hours=5))

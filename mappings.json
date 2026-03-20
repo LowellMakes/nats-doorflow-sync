@@ -1,0 +1,21 @@
+{
+  "team_mappings": {
+    "1414945304": {"name": "AudioBooth", "doorflow_group_id": 5005},
+    "1414859442": {"name": "ChopShop", "doorflow_group_id": 4695},
+    "1414846180": {"name": "Excom", "doorflow_group_id": 4708},
+    "1414982431": {"name": "Memcom", "doorflow_group_id": 5466},
+    "1414856801": {"name": "MetalShop", "doorflow_group_id": 4623},
+    "1414863264": {"name": "Ops", "doorflow_group_id": 4709},
+    "1414859535": {"name": "PaintShop", "doorflow_group_id": 4624},
+    "1414945303": {"name": "Studio", "doorflow_group_id": 5004},
+    "1414848104": {"name": "Woodshop", "doorflow_group_id": 4622},
+    "1415036464": {"name": "BrewShop", "doorflow_group_id": 6071},
+    "1415371604": {"name": "ResinRoom", "doorflow_group_id": 40599},
+    "1415601192": {"name": "JewelryShop", "doorflow_group_id": 85849}
+  },
+  "basic_member": {
+    "name": "Basic Member",
+    "id": 4482
+  },
+  "always_include_groups": [4719]
+}
