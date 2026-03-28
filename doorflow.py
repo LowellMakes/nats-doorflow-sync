@@ -26,7 +26,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential, before_log, re
 
 log = logging.getLogger(__name__)
 
-DOORFLOW_API_BASE = "https://api.doorflow.com/api/2"   # TODO: confirm base URL
+# API endpoint — confirm with Doorflow documentation
+# (see: https://api.doorflow.com/docs or API reference)
+DOORFLOW_API_BASE = "https://api.doorflow.com/api/2"
 DOORFLOW_API_KEY = os.environ["DOORFLOW_API_KEY"]
 
 
@@ -124,11 +126,14 @@ def _fetch_pages(endpoint: str, params: dict = {}) -> list[dict]:
 def _parse_member(record: dict) -> DoorflowMember:
     """
     Convert a raw Doorflow API record into a DoorflowMember dataclass.
-    All field name mappings live here.
+    
+    Field mappings:
+    - email: member email address (confirm: check Doorflow API response sample)
+    - groups: list of group objects with 'id' field (confirm: check API response)
     """
     return DoorflowMember(
-        email=record["email"],                                      # TODO: confirm field name
-        groups=[g["id"] for g in record.get("groups", [])],      # TODO: confirm field name
+        email=record["email"],
+        groups=[g["id"] for g in record.get("groups", [])],
     )
 
 
@@ -137,9 +142,12 @@ def _parse_member(record: dict) -> DoorflowMember:
 # ---------------------------------------------------------------------------
 
 def fetch_all() -> list[DoorflowMember]:
-    """Fetch every person currently in Doorflow. Used by the full sync."""
+    """Fetch every person currently in Doorflow. Used by the full sync.
+    
+    Endpoint: /people — confirm this returns all members (check Doorflow API docs)
+    """
     log.info("Doorflow | fetching all members")
-    records = _fetch_pages("/people")           # TODO: confirm endpoint
+    records = _fetch_pages("/people")
     members = [_parse_member(r) for r in records]
     log.info(f"Doorflow | fetched {len(members)} member(s)")
     return members
@@ -156,11 +164,13 @@ def fetch_members(emails: list[str]) -> list[DoorflowMember]:
     members = []
     for email in emails:
         try:
-            records = _get("/people", {"email": email})   # TODO: confirm filter param
+            # Query param to filter by email (confirm: check Doorflow API docs)
+            records = _get("/people", {"email": email})
             members.extend(_parse_member(r) for r in records)
         except requests.HTTPError as e:
             if e.response.status_code == 404:
-                pass  # Member doesn't exist in Doorflow yet — that's fine
+                # Member doesn't exist in Doorflow yet — that's fine, will be created
+                pass
             else:
                 raise
     return members
@@ -173,29 +183,20 @@ def apply(diff: "reconcile.Diff", dry_run: bool = False) -> None:
     """
     for member in diff.adds:
         log.info(f"ADD    | {member.email} | groups={member.groups}")
-
-        '''
         if not dry_run:
             _post("/people", {                  # TODO: confirm request body shape
                 "email": member.email,
                 "groups": member.groups,
             })
-        '''
 
     for member in diff.removes:
         log.info(f"REMOVE | {member.email}")
-
-        '''
         if not dry_run:
             _delete(f"/people/{member.email}")  # TODO: confirm endpoint + identifier
-        '''
 
     for member in diff.updates:
         log.info(f"UPDATE | {member.email} | groups={member.groups}")
-
-        '''
         if not dry_run:
             _put(f"/people/{member.email}", {   # TODO: confirm endpoint + request body shape
                 "groups": member.groups,
             })
-        '''

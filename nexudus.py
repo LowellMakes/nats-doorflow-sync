@@ -14,12 +14,11 @@ Returns plain NexudusMember dataclass objects. No business logic here.
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, before_log, retry_if_exception_type
-from datetime import datetime, timezone, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -72,14 +71,22 @@ def _fetch_pages(endpoint: str, params: dict) -> list[dict]:
 def _parse_member(record: dict[str, Any]) -> NexudusMember:
     """
     Convert a raw Nexudus API record into a NexudusMember dataclass.
-    All field name mappings live here — one place to update if the API changes.
+    
+    Field mappings (all from Nexudus /spaces/coworkers endpoint):
+    - Email: member email address
+    - FullName: display name
+    - TeamIds: comma-separated team IDs (empty = no teams)
+    - CoworkerContractIds: comma-separated contract IDs (empty = unpaid/past-due)
+    - UpdatedOn: ISO 8601 timestamp of last modification
+    
+    This is the single place to update if Nexudus API field names change.
     """
     return NexudusMember(
         email=record["Email"],
         full_name=record["FullName"],
         team_ids=[int(x) for x in record['TeamIds'].split(",")] if record['TeamIds'] else [], 
-        contract_ids=[int(x) for x in record['CoworkerContractIds'].split(",")] if record['CoworkerContractIds'] else [],   # TODO: confirm exact field name
-        last_updated=datetime.fromisoformat(record["UpdatedOn"]),  # TODO: confirm exact field name
+        contract_ids=[int(x) for x in record['CoworkerContractIds'].split(",")] if record['CoworkerContractIds'] else [],
+        last_updated=datetime.fromisoformat(record["UpdatedOn"]),
     )
 
 # ---------------------------------------------------------------------------
@@ -98,17 +105,15 @@ def fetch_all() -> list[NexudusMember]:
 def fetch_updated_since(since: datetime) -> list[NexudusMember]:
     """
     Fetch only members whose profiles changed after `since`.
-    Used by the fast sync.
+    Used by the fast sync to avoid re-fetching unchanged members.
+    
+    Query param: from_Coworker_UpdatedOn (confirm with Nexudus API docs)
     """
     log.info(f"Nexudus | fetching members updated since {since.strftime('%Y-%m-%dT%H:%M:%S')}")
     records = _fetch_pages(
         "/spaces/coworkers",
-        {"from_Coworker_UpdatedOn": since.strftime('%Y-%m-%dT%H:%M')},   # TODO: confirm exact param name
+        {"from_Coworker_UpdatedOn": since.strftime('%Y-%m-%dT%H:%M')},
     )
     members = [_parse_member(r) for r in records]
     log.info(f"Nexudus | fetched {len(members)} updated member(s)")
     return members
-
-if __name__ == '__main__':
-
-    members = fetch_updated_since(datetime.now(timezone.utc) - timedelta(hours=5))

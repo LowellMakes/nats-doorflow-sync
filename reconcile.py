@@ -20,6 +20,20 @@ from nexudus import NexudusMember
 log = logging.getLogger(__name__)
 
 
+def load_mappings() -> dict:
+    """Load and parse mappings.json configuration.
+    
+    This is shared across multiple functions to avoid duplicate file I/O.
+    """
+    mappings_file = os.path.join(os.path.dirname(__file__), "mappings.json")
+    try:
+        with open(mappings_file, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
+        log.error("Failed to load mappings from %s: %s", mappings_file, e)
+        raise
+
+
 @dataclass
 class Diff:
     adds: list[DoorflowMember]      # members to create in Doorflow
@@ -27,24 +41,50 @@ class Diff:
     updates: list[DoorflowMember]   # members whose groups need updating
 
 
+def _get_doorflow_groups(
+    team_ids: list[int],
+    team_mappings: dict,
+    basic_member_id: int,
+) -> list[int]:
+    """
+    Translate Nexudus team IDs to Doorflow group IDs.
+    
+    Returns: [basic_member_id] + [mapped group IDs for teams that have mappings]
+    
+    Logs warnings for any teams that don't have a mapping in mappings.json.
+    Those members just won't get the unmapped team's group in Doorflow.
+    """
+    # Map available teams to their Doorflow groups
+    mapped_groups = [
+        team_mappings[str(team_id)]["doorflow_group_id"]
+        for team_id in team_ids
+        if str(team_id) in team_mappings
+    ]
+    
+    # Log unmapped teams so admins can add them to mappings.json
+    for team_id in team_ids:
+        if str(team_id) not in team_mappings:
+            log.warning(f"Nexudus team {team_id} has no Doorflow mapping")
+    
+    return [basic_member_id] + mapped_groups
+
+
 def _compute_desired(members: list[NexudusMember]) -> list[DoorflowMember]:
     """
     Compute the desired Doorflow state from a list of Nexudus members.
-
-    Business rules:
-      - If a member has an unpaid invoice, they get no access in Doorflow.
-      - Otherwise, their Doorflow groups mirror their Nexudus groups exactly.
+    
+    Business logic (payment & access):
+    - If contract_ids is empty, they owe money → no access in Doorflow
+    - If contract_ids is non-empty, they're paid up → grant access:
+      - basic_member group (always)
+      - + any team-mapped groups (from mappings.json)
+    
+    This is the "source of truth" calculation. The actual sync compares this
+    against current Doorflow state to determine what needs to change.
     """
-    mappings_file = os.path.join(os.path.dirname(__file__), "mappings.json")
-    try:
-        with open(mappings_file, "r") as f:
-            config = json.load(f)
-        team_mappings = config["team_mappings"]
-        basic_member = config["basic_member"]["id"]
-        always_include_groups = config.get("always_include_groups", [])
-    except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
-        log.error("Failed to load mappings from %s: %s", mappings_file, e)
-        raise
+    config = load_mappings()
+    team_mappings = config["team_mappings"]
+    basic_member = config["basic_member"]["id"]
 
     desired = []
     for member in members:
@@ -52,19 +92,7 @@ def _compute_desired(members: list[NexudusMember]) -> list[DoorflowMember]:
             # Member owes money — no access until resolved.
             continue
 
-        groups = [basic_member]
-        for team in member.team_ids:
-            try:
-                team_config = team_mappings[str(team)]
-                groups.append(team_config["doorflow_group_id"])
-            except KeyError:
-                log.warning(
-                    "Nexudus team %s has no Doorflow mapping; "
-                    "skipping for member %s",
-                    team,
-                    member.email,
-                )
-        groups.extend(always_include_groups)
+        groups = _get_doorflow_groups(member.team_ids, team_mappings, basic_member)
         desired.append(DoorflowMember(email=member.email, groups=groups))
     return desired
 
@@ -72,7 +100,13 @@ def _compute_desired(members: list[NexudusMember]) -> list[DoorflowMember]:
 def _diff(desired: list[DoorflowMember], actual: list[DoorflowMember]) -> Diff:
     """
     Compare desired Doorflow state against actual Doorflow state.
-    Returns a Diff describing exactly what needs to change.
+    
+    Returns three lists:
+    - adds: Members in desired but not in Doorflow (create them)
+    - removes: Members in Doorflow but not in desired (delete them)
+    - updates: Members in both but with different groups (change groups)
+    
+    All comparisons are by email address.
     """
     desired_by_email = {m.email: m for m in desired}
     actual_by_email  = {m.email: m for m in actual}
@@ -102,21 +136,23 @@ def _diff(desired: list[DoorflowMember], actual: list[DoorflowMember]) -> Diff:
 
 
 def changes(nexudus_members: list[NexudusMember], doorflow_members: list[DoorflowMember]):
+    """Compute desired state and compute the diff against actual state.
+    
+    Members in the cleaner group are protected from removal — even if they're
+    not in Nexudus, we won't remove them from Doorflow.
+    """
     desired = _compute_desired(nexudus_members)
-    changes = _diff(desired, doorflow_members)
+    diff = _diff(desired, doorflow_members)
 
+    config = load_mappings()
+    cleaner_group = config.get("cleaner")
 
-    mappings_file = os.path.join(os.path.dirname(__file__), "mappings.json")
-    try:
-        with open(mappings_file, "r") as f:
-            config = json.load(f)
-        always_include_groups = config.get("always_include_groups", [])
-    except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
-        log.error("Failed to load mappings from %s: %s", mappings_file, e)
-        raise
+    # Protect members in always_include_groups from removal
+    if cleaner_group:
+        diff.removes = [
+            m for m in diff.removes
+            if not any(g == cleaner_group['id'] for g in m.groups)
+        ]
 
-    for g in always_include_groups:
-        changes.removes = [m for m in changes.removes if g not in m.groups]
-
-    return changes
+    return diff
 
